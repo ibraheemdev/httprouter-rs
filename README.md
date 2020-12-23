@@ -9,7 +9,7 @@ HttpRouter is a lightweight high performance HTTP request router.
 
 This router supports variables in the routing pattern and matches against the request method. It also scales very well.
 
-The router is optimized for high performance and a small memory footprint. It scales well even with very long paths and a large number of routes. A compressing dynamic trie (radix tree) structure is used for efficient matching.
+The router is optimized for high performance and a small memory footprint. It scales well even with very long paths and a large number of routes. A compressing dynamic trie (radix tree) structure is used for efficient matching. Internally, it uses the [matchit](https://github.com/ibraheemdev/matchit) package.
 
 ## Features
 
@@ -19,16 +19,16 @@ The router is optimized for high performance and a small memory footprint. It sc
 
 **Parameters in your routing pattern:** Stop parsing the requested URL path, just give the path segment a name and the router delivers the dynamic value to you. Because of the design of the router, path parameters are very cheap.
 
-**High Performance:** HttpRouter relies on a tree structure which makes heavy use of *common prefixes*, it is basically a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). This makes lookups extremely fast. [See below for technical details](#how-does-it-work).
+**High Performance:** HttpRouter relies on a tree structure which makes heavy use of *common prefixes*, it is basically a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). This makes lookups extremely fast. Internally, it uses the [matchit](https://github.com/ibraheemdev/matchit) package.
 
 Of course you can also set **custom [`NotFound`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.not_found) and  [`MethodNotAllowed`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.method_not_allowed) handlers** , [**serve static files**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.serve_files), and [**automatically respond to OPTIONS requests**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.global_options)
 
 ## Usage
 
-With the `hyper-server` feature enabled, the `Router` can be used as a router for a hyper server:
+Here is a simple example:
 
 ```rust,no_run
-use httprouter::{Router, HyperRouter, Params, Handler};
+use httprouter::{Router, Params, Handler};
 use std::convert::Infallible;
 use hyper::{Request, Response, Body, Error};
 
@@ -43,9 +43,9 @@ async fn hello(req: Request<Body>) -> Result<Response<Body>, Error> {
 
 #[tokio::main]
 async fn main() {
-    let mut router: HyperRouter = Router::default();
-    router.get("/", Handler::new(index));
-    router.get("/hello/:user", Handler::new(hello));
+    let mut router: Router = Router::default();
+    router.get("/", index);
+    router.get("/hello/:user", hello);
 
     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
         .serve(router.into_service())
@@ -53,26 +53,9 @@ async fn main() {
 }
 ```
 
-Because the `Router` is generic, it can be used to store arbitrary values. This makes it flexible enough to be used as a building block for larger frameworks:
-
-```rust
-use httprouter::Router;
-use hyper::Method;
-
-fn main() {
-    let mut router: Router<Method, String> = Router::default();
-    router.handle("/users/:id", Method::GET, "Welcome!".to_string());
-
-    let res = router.lookup(&Method::GET, "/users/200").unwrap();
-    
-    assert_eq!(res.params.by_name("id"), Some("200"));
-    assert_eq!(res.value, &"Welcome!".to_string());
-}
-```
-
 ### Named parameters
 
-As you can see, `:user` is a *named parameter*. The values are accessible via [`Params`](), which stores a vector of keys and values. You can get the value of a parameter either by its index in the vector, or by using the `Params::by_name(name)` method. For example, `:user` can be retrieved by `params.by_name("user")`. With the `hyper` server, you can access the params in a handler function by calling `req.extensions().get::<Params>()`.
+As you can see, `:user` is a *named parameter*. The values are accessible via `req.extensions().get::<Params>()`.
 
 Named parameters only match a single path segment:
 
@@ -99,49 +82,12 @@ Pattern: /src/*filepath
  /src/subdir/somefile.go   match
 ```
 
-## How does it work?
-
-The router relies on a tree structure which makes heavy use of *common prefixes*, it is basically a *compact* [*prefix tree*](https://en.wikipedia.org/wiki/Trie) (or just [*Radix tree*](https://en.wikipedia.org/wiki/Radix_tree)). Nodes with a common prefix also share a common parent. Here is a short example what the routing tree for the `GET` request method could look like:
-
-```ignore,none
-Priority   Path             Handle
-9          \                *<1>
-3          ├s               None
-2          |├earch\         *<2>
-1          |└upport\        *<3>
-2          ├blog\           *<4>
-1          |    └:post      None
-1          |         └\     *<5>
-2          ├about-us\       *<6>
-1          |        └team\  *<7>
-1          └contact\        *<8>
-```
-
-Every `*<num>` represents the memory address of a handler function (a pointer). If you follow a path trough the tree from the root to the leaf, you get the complete route path, e.g `\blog\:post\`, where `:post` is just a placeholder ([*parameter*](#named-parameters)) for an actual post name. Unlike hash-maps, a tree structure also allows us to use dynamic parts like the `:post` parameter, since we actually match against the routing patterns instead of just comparing hashes. This works very well and efficiently.
-
-Since URL paths have a hierarchical structure and make use only of a limited set of characters (byte values), it is very likely that there are a lot of common prefixes. This allows us to easily reduce the routing into ever smaller problems. Moreover the router manages a separate tree for every request method. For one thing it is more space efficient than holding a method->handle map in every single node, it also allows us to greatly reduce the routing problem before even starting the look-up in the prefix-tree.
-
-For even better scalability, the child nodes on each tree level are ordered by priority, where the priority is just the number of handles registered in sub nodes (children, grandchildren, and so on..). This helps in two ways:
-
-1. Nodes which are part of the most routing paths are evaluated first. This helps to make as much routes as possible to be reachable as fast as possible.
-2. It is some sort of cost compensation. The longest reachable path (highest cost) can always be evaluated first. The following scheme visualizes the tree structure. Nodes are evaluated from top to bottom and from left to right.
-
-```ignore,none
-├------------
-├---------
-├-----
-├----
-├--
-├--
-└-
-```
-
 ## Automatic OPTIONS responses and CORS
 
 One might wish to modify automatic responses to OPTIONS requests, e.g. to support [CORS preflight requests](https://developer.mozilla.org/en-US/docs/Glossary/preflight_request) or to set other headers. This can be achieved using the [`Router::global_options`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.global_options) handler:
 
 ```rust
-use httprouter::{Router, HyperRouter, Handler};
+use httprouter::{Router, Handler};
 use hyper::{Request, Response, Body, Error};
 
 async fn global_options(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -153,8 +99,8 @@ async fn global_options(_: Request<Body>) -> Result<Response<Body>, Error> {
 }
 
 fn main() {
-  let mut router: HyperRouter = Router::default();
-  router.global_options = Some(Handler::new(global_options));
+  let mut router: Router = Router::default();
+  router.global_options = Some(Box::new(global_options));
 }
 ```
 
@@ -163,7 +109,7 @@ fn main() {
 Here is a quick example: Does your server serve multiple domains / hosts? You want to use sub-domains? Define a router per host!
 
 ```rust,no_run
-use httprouter::{Handler, HyperRouter, Router};
+use httprouter::{Handler, Router};
 use httprouter::router::RouterService;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
@@ -171,7 +117,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-pub struct HostSwitch(HashMap<String, HyperRouter>);
+pub struct HostSwitch(HashMap<String, Router>);
 
 impl HostSwitch {
     async fn serve(&self, req: Request<Body>) -> hyper::Result<Response<Body>> {
@@ -195,8 +141,8 @@ async fn hello(_: Request<Body>) -> hyper::Result<Response<Body>> {
 
 #[tokio::main]
 async fn main() {
-    let mut router: HyperRouter = Router::default();
-    router.get("/", Handler::new(hello));
+    let mut router: Router = Router::default();
+    router.get("/", hello);
 
     let mut host_switch: HostSwitch = HostSwitch(HashMap::new());
     host_switch.0.insert("example.com:12345".into(), router);
@@ -228,20 +174,18 @@ You can use another handler, to handle requests which could not be matched by th
 The `not_found` handler can for example be used to return a 404 page:
 
 ```rust
-use httprouter::{Router, HyperRouter, Handler};
+use httprouter::{Router, Handler};
 use hyper::{Request, Response, Body};
 
-async fn not_found(_: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-  Ok(Response::builder()
-    .header("Location", "/404")
-    .status(404)
-    .body(Body::empty())
-    .unwrap())
-};
-
 fn main() {
-  let mut router: HyperRouter = Router::default();
-  router.not_found = Some(Handler::new(not_found));
+    let mut router: Router = Router::default();
+    router.not_found = Some(Box::new(|_| {
+        async { 
+            Ok(Response::builder()
+                .status(400)
+                .body(Body::empty())
+                .unwrap()) }
+    }));
 }
 ```
 

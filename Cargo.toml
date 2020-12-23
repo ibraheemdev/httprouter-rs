@@ -10,14 +10,10 @@ keywords = ["hyper", "path", "tree", "radix", "router"]
 repository = "https://github.com/ibraheemdev/httprouter-rs/"
 readme = "README.md"
 
-[features]
-default = ["hyper-server"]
-hyper-server = ["hyper"]
-
 [dependencies]
 futures = "0.3.6"
-http = "0.2.1"
-hyper = { version = "0.13.9", optional = true }
+hyper = "0.13.9"
+matchit = "0.2.0"
 
 [dev-dependencies]
 hyper = "0.13.9"
