@@ -11,7 +11,6 @@ repository = "https://github.com/ibraheemdev/httprouter-rs/"
 readme = "README.md"
 
 [dependencies]
-futures = "0.3.6"
 hyper = "0.13.9"
 matchit = "0.2.0"
 

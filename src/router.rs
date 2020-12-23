@@ -88,11 +88,11 @@
 //!  let third_value = &params[2].value; // the value of the 3rd parameter
 //! ```
 use crate::path::clean;
-use futures::future::{ok, Future};
 use hyper::service::Service;
 use hyper::{header, Body, Method, Request, Response, StatusCode};
 use matchit::{Match, Node};
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::str;
 use std::sync::Arc;
@@ -292,8 +292,8 @@ impl Default for Router {
       handle_options: true,
       global_options: None,
       method_not_allowed: None,
-      not_found: Some(Box::new(|_| {
-        ok(
+      not_found: Some(Box::new(|_| async {
+        Ok(
           Response::builder()
             .status(400)
             .body(Body::from("404: Not Found"))
@@ -463,26 +463,30 @@ impl Router {
                 path.to_string() + "/"
               };
 
-              return Box::pin(ok(
-                Response::builder()
-                  .header(header::LOCATION, path.as_str())
-                  .status(code)
-                  .body(Body::empty())
-                  .unwrap(),
-              ));
+              return Box::pin(async move {
+                Ok(
+                  Response::builder()
+                    .header(header::LOCATION, path.as_str())
+                    .status(code)
+                    .body(Body::empty())
+                    .unwrap(),
+                )
+              });
             };
 
             if self.redirect_fixed_path {
               if let Some(fixed_path) =
                 root.find_case_insensitive_path(&clean(path), self.redirect_trailing_slash)
               {
-                return Box::pin(ok(
-                  Response::builder()
-                    .header(header::LOCATION, fixed_path.as_str())
-                    .status(code)
-                    .body(Body::empty())
-                    .unwrap(),
-                ));
+                return Box::pin(async move {
+                  Ok(
+                    Response::builder()
+                      .header(header::LOCATION, fixed_path.as_str())
+                      .status(code)
+                      .body(Body::empty())
+                      .unwrap(),
+                  )
+                });
               }
             };
           };
@@ -496,12 +500,14 @@ impl Router {
         match &self.global_options {
           Some(handler) => return handler.handle(req),
           None => {
-            return Box::pin(ok(
-              Response::builder()
-                .header(header::ALLOW, allow)
-                .body(Body::empty())
-                .unwrap(),
-            ));
+            return Box::pin(async {
+              Ok(
+                Response::builder()
+                  .header(header::ALLOW, allow)
+                  .body(Body::empty())
+                  .unwrap(),
+              )
+            });
           }
         };
       }
@@ -512,21 +518,21 @@ impl Router {
         if let Some(ref handler) = self.method_not_allowed {
           return handler.handle(req);
         }
-        return Box::pin(ok(
-          Response::builder()
-            .header(header::ALLOW, allow)
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Body::empty())
-            .unwrap(),
-        ));
+        return Box::pin(async {
+          Ok(
+            Response::builder()
+              .header(header::ALLOW, allow)
+              .status(StatusCode::METHOD_NOT_ALLOWED)
+              .body(Body::empty())
+              .unwrap(),
+          )
+        });
       }
     };
 
     match &self.not_found {
       Some(handler) => handler.handle(req),
-      None => Box::pin(ok(
-        Response::builder().status(404).body(Body::empty()).unwrap(),
-      )),
+      None => Box::pin(async { Ok(Response::builder().status(404).body(Body::empty()).unwrap()) }),
     }
   }
 }
