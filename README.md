@@ -28,7 +28,7 @@ Of course you can also set **custom [`NotFound`](https://docs.rs/httprouter/newe
 Here is a simple example:
 
 ```rust,no_run
-use httprouter::Router, Params;
+use httprouter::{Router, Params};
 use std::convert::Infallible;
 use hyper::{Request, Response, Body, Error};
 
