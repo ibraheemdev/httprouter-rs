@@ -28,7 +28,7 @@ Of course you can also set **custom [`NotFound`](https://docs.rs/httprouter/newe
 Here is a simple example:
 
 ```rust,no_run
-use httprouter::{Router, Params, Handler};
+use httprouter::Router, Params;
 use std::convert::Infallible;
 use hyper::{Request, Response, Body, Error};
 
@@ -87,7 +87,7 @@ Pattern: /src/*filepath
 One might wish to modify automatic responses to OPTIONS requests, e.g. to support [CORS preflight requests](https://developer.mozilla.org/en-US/docs/Glossary/preflight_request) or to set other headers. This can be achieved using the [`Router::global_options`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.global_options) handler:
 
 ```rust
-use httprouter::{Router, Handler};
+use httprouter::Router;
 use hyper::{Request, Response, Body, Error};
 
 async fn global_options(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -109,7 +109,7 @@ fn main() {
 Here is a quick example: Does your server serve multiple domains / hosts? You want to use sub-domains? Define a router per host!
 
 ```rust,no_run
-use httprouter::{Handler, Router};
+use httprouter::Router;
 use httprouter::router::RouterService;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
@@ -174,18 +174,19 @@ You can use another handler, to handle requests which could not be matched by th
 The `not_found` handler can for example be used to return a 404 page:
 
 ```rust
-use httprouter::{Router, Handler};
-use hyper::{Request, Response, Body};
+use httprouter::Router;
+use hyper::{Request, Response, Body, Error};
+
+async fn not_found(req: Request<Body>) -> Result<Response<Body>, Error> {
+    Ok(Response::builder()
+	.status(400)
+	.body(Body::empty())
+	.unwrap()) 
+}
 
 fn main() {
     let mut router: Router = Router::default();
-    router.not_found = Some(Box::new(|_| {
-        async { 
-            Ok(Response::builder()
-                .status(400)
-                .body(Body::empty())
-                .unwrap()) }
-    }));
+    router.not_found = Some(Box::new(not_found));
 }
 ```
 
