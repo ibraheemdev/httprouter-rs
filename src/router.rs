@@ -186,7 +186,7 @@ impl Router {
   /// let res = router.lookup(&Method::GET, "/home").unwrap();
   /// assert!(res.params.is_empty());
   /// ```
-  pub fn lookup(&mut self, method: &Method, path: &str) -> Result<Match<Box<dyn Handler>>, bool> {
+  pub fn lookup(&self, method: &Method, path: &str) -> Result<Match<Box<dyn Handler>>, bool> {
     self
       .trees
       .get_mut(method)
