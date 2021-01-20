@@ -189,7 +189,7 @@ impl Router {
   pub fn lookup(&self, method: &Method, path: &str) -> Result<Match<Box<dyn Handler>>, bool> {
     self
       .trees
-      .get_mut(method)
+      .get(method)
       .map_or(Err(false), |n| n.match_path(path))
   }
 
