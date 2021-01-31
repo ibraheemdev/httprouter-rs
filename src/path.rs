@@ -16,8 +16,6 @@ pub fn clean(p: &str) -> String {
     return "/".to_string();
   }
 
-  // Reasonably sized buffer on stack to avoid allocations in the common case.
-  // If a larger buffer is required, it gets allocated dynamically.
   let mut buf: Vec<u8> = Vec::new();
 
   let n = p.len();
@@ -25,11 +23,10 @@ pub fn clean(p: &str) -> String {
   // Invariants:
   //      reading from path; r is index of next byte to process.
   //      writing to buf; w is index of next byte to write.
-
-  // path must start with '/'
   let mut r = 1;
   let mut w = 1;
-
+  
+  // path must start with '/'
   if !p.starts_with('/') {
     r = 0;
     buf.resize(n + 1, 0);
@@ -38,11 +35,6 @@ pub fn clean(p: &str) -> String {
 
   let mut trailing = n > 1 && p.ends_with('/');
   let p = p.as_bytes();
-
-  // A bit more clunky without a 'lazybuf' like the path package, but the loop
-  // gets completely inlined (bufApp calls).
-  // So in contrast to the path package this loop has no expensive function
-  // calls (except make, if needed).
 
   while r < n {
     match p[r] {
