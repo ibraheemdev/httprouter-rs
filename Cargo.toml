@@ -1,6 +1,6 @@
 [package]
 name = "httprouter"
-version = "0.2.0"
+version = "0.3.0"
 license = "MIT"
 authors = ["ibraheem <ibrah1440@gmail.com>"]
 edition = "2018"
@@ -12,7 +12,8 @@ readme = "README.md"
 
 [dependencies]
 hyper = "0.13.9"
-matchit = "0.2.0"
+futures-util = { version = "0.3", default-features = false }
+matchit = "0.3"
 
 [dev-dependencies]
 hyper = "0.13.9"

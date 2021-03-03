@@ -1,6 +1,6 @@
 # HttpRouter
 
-[![Documentation](https://img.shields.io/badge/docs-0.2.0-4d76ae?style=for-the-badge)](https://docs.rs/httprouter/0.2.0)
+[![Documentation](https://img.shields.io/badge/docs-0.3.0-4d76ae?style=for-the-badge)](https://docs.rs/httprouter/0.3.0)
 [![Version](https://img.shields.io/crates/v/httprouter?style=for-the-badge)](https://crates.io/crates/httprouter)
 [![License](https://img.shields.io/crates/l/httprouter?style=for-the-badge)](https://crates.io/crates/httprouter)
 [![Actions](https://img.shields.io/github/workflow/status/ibraheemdev/httprouter-rs/Rust/master?style=for-the-badge)](https://github.com/ibraheemdev/httprouter-rs/actions)
@@ -38,7 +38,7 @@ async fn index(_: Request<Body>) -> Result<Response<Body>, Error> {
 
 async fn hello(req: Request<Body>) -> Result<Response<Body>, Error> {
     let params = req.extensions().get::<Params>().unwrap();
-    Ok(Response::new(format!("Hello, {}", params.by_name("user").unwrap()).into()))
+    Ok(Response::new(format!("Hello, {}", params.get("user").unwrap()).into()))
 }
 
 #[tokio::main]
@@ -117,9 +117,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-pub struct HostSwitch(HashMap<String, Router>);
+pub struct HostSwitch<'a>(HashMap<String, Router<'a>>);
 
-impl HostSwitch {
+impl HostSwitch<'_> {
     async fn serve(&self, req: Request<Body>) -> hyper::Result<Response<Body>> {
         let forbidden = Response::builder()
             .status(StatusCode::FORBIDDEN)
