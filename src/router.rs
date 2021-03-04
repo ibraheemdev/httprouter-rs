@@ -186,12 +186,12 @@ impl<'path> Router<'path> {
     /// assert!(res.params.is_empty());
     /// ```
     pub fn lookup(
-        &mut self,
+        &self,
         method: &Method,
         path: &str,
     ) -> Result<Match<'_, Box<dyn Handler>>, matchit::Tsr> {
         self.trees
-            .get_mut(method)
+            .get(method)
             .map_or(Err(matchit::Tsr::No), |n| n.at(path))
     }
 
