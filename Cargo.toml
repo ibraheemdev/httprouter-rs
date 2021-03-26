@@ -16,5 +16,5 @@ futures-util = { version = "0.3", default-features = false }
 matchit = "0.3"
 
 [dev-dependencies]
-hyper = "0.14"
+hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
 tokio = { version = "1.4", features = ["full"] }
