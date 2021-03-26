@@ -45,9 +45,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut router: Router = Router::default();
-//!     router.get("/", index);
-//!     router.get("/hello/:user", hello);
+//!     let router = Router::default()
+//!         .get("/", index)
+//!         .get("/hello/:user", hello);
 //!
 //!     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
 //!         .serve(router.into_service())
@@ -92,17 +92,17 @@
 //! use httprouter::{Router, Handler};
 //! use hyper::{Request, Response, Body, Error};
 //!
-//! async fn global_options(_: Request<Body>) -> Result<Response<Body>, Error> {
-//!     Ok(Response::builder()
+//! async fn cors(_: Request<Body>) -> Result<Response<Body>, Error> {
+//!     let res = Response::builder()
 //!         .header("Access-Control-Allow-Methods", "Allow")
-//! 	.header("Access-Control-Allow-Origin", "*")
+//!         .header("Access-Control-Allow-Origin", "*")
 //!         .body(Body::empty())
-//!         .unwrap())
+//!         .unwrap();
+//!     Ok(res)
 //! }
 //!
 //! fn main() {
-//!   let mut router: Router = Router::default();
-//!   router.global_options = Some(Box::new(global_options));
+//!   let router = Router::default().global_options(cors);
 //! }
 //! ```
 //!
@@ -143,8 +143,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut router: Router = Router::default();
-//!     router.get("/", hello);
+//!     let router = Router::default()
+//!         .get("/", hello)
+//!         .get("/home", hello);
 //!
 //!     let mut host_switch: HostSwitch = HostSwitch(HashMap::new());
 //!     host_switch.0.insert("example.com:12345".into(), router);
@@ -176,18 +177,19 @@
 //! The `not_found` handler can for example be used to return a 404 page:
 //!
 //! ```rust
-//! use httprouter::{Router, Handler};
-//! use hyper::{Request, Response, Body};
-//!
+//! use httprouter::Router;
+//! use hyper::{Request, Response, Body, Error};
+//! 
+//! async fn not_found(req: Request<Body>) -> Result<Response<Body>, Error> {
+//!     let res = Response::builder()
+//! 	    .status(400)
+//! 	    .body(Body::empty())
+//! 	    .unwrap();
+//! 	Ok(res)
+//! }
+//! 
 //! fn main() {
-//!     let mut router: Router = Router::default();
-//!     router.not_found = Some(Box::new(|_| {
-//!         async {
-//!             Ok(Response::builder()
-//!                 .status(400)
-//!                 .body(Body::empty())
-//!                 .unwrap()) }
-//!     }));
+//!     let router = Router::default().not_found(not_found);
 //! }
 //! ```
 //!
@@ -216,11 +218,11 @@ pub use matchit::Params;
 #[cfg(doctest)]
 mod test_readme {
     macro_rules! doc_comment {
-    ($x:expr) => {
-        #[doc = $x]
-        extern {}
-    };
-  }
+        ($x:expr) => {
+            #[doc = $x]
+            extern "C" {}
+        };
+    }
 
     doc_comment!(include_str!("../README.md"));
 }

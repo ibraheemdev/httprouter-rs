@@ -25,9 +25,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut router: Router = Router::default();
-//!     router.get("/", index);
-//!     router.get("/hello/:user", hello);
+//!     let router = Router::default()
+//!         .get("/", index)
+//!         .get("/hello/:user", hello);
 //!
 //!     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
 //!         .serve(router.into_service())
@@ -101,52 +101,13 @@ use std::task::{Context, Poll};
 /// Router dispatches requests to different handlers via configurable routes.
 pub struct Router<'path> {
     trees: HashMap<Method, Node<'path, Box<dyn Handler>>>,
-
-    /// Enables automatic redirection if the current route can't be matched but a
-    /// handler for the path with (without) the trailing slash exists.
-    /// For example if `/foo/` is requested but a route only exists for `/foo`, the
-    /// client is redirected to `/foo` with HTTP status code 301 for `GET` requests
-    /// and 307 for all other request methods.
-    pub redirect_trailing_slash: bool,
-
-    /// If enabled, the router tries to fix the current request path, if no
-    /// handle is registered for it.
-    /// First superfluous path elements like `../` or `//` are removed.
-    /// Afterwards the router does a case-insensitive lookup of the cleaned path.
-    /// If a handle can be found for this route, the router makes a redirection
-    /// to the corrected path with status code 301 for `GET` requests and 307 for
-    /// all other request methods.
-    /// For example `/FOO` and `/..//Foo` could be redirected to `/foo`.
-    /// `redirect_trailing_slash` is independent of this option.
-    pub redirect_fixed_path: bool,
-
-    /// If enabled, the router checks if another method is allowed for the
-    /// current route, if the current request can not be routed.
-    /// If this is the case, the request is answered with `MethodNotAllowed`
-    /// and HTTP status code 405.
-    /// If no other Method is allowed, the request is delegated to the `NotFound`
-    /// handler.
-    pub handle_method_not_allowed: bool,
-
-    /// If enabled, the router automatically replies to `OPTIONS` requests.
-    /// Custom `OPTIONS` handlers take priority over automatic replies.
-    pub handle_options: bool,
-
-    /// An optional handler that is called on automatic `OPTIONS` requests.
-    /// The handler is only called if `handle_options` is true and no `OPTIONS`
-    /// handler for the specific path was set.
-    /// The `Allowed` header is set before calling the handler.
-    pub global_options: Option<Box<dyn Handler>>,
-
-    /// Configurable handler which is called when no matching route is
-    /// found.
-    pub not_found: Option<Box<dyn Handler>>,
-
-    /// A configurable handler which is called when a request
-    /// cannot be routed and `handle_method_not_allowed` is true.
-    /// The `Allow` header with allowed request methods is set before the handler
-    /// is called.
-    pub method_not_allowed: Option<Box<dyn Handler>>,
+    redirect_trailing_slash: bool,
+    redirect_fixed_path: bool,
+    handle_method_not_allowed: bool,
+    handle_options: bool,
+    global_options: Option<Box<dyn Handler>>,
+    not_found: Option<Box<dyn Handler>>,
+    method_not_allowed: Option<Box<dyn Handler>>,
 }
 
 impl<'path> Router<'path> {
@@ -155,12 +116,17 @@ impl<'path> Router<'path> {
     /// use httprouter::Router;
     /// use hyper::{Response, Body, Method};
     ///
-    /// let mut router: Router = Router::default();
-    /// router.handle("/teapot", Method::GET, |_| {
-    ///     async { Ok(Response::new(Body::from("I am a teapot!"))) }
-    /// });
+    /// let router = Router::default()
+    ///     .handle("/teapot", Method::GET, |_| async {
+    ///         Ok(Response::new(Body::from("I am a teapot!")))
+    ///     });
     /// ```
-    pub fn handle(&mut self, path: &'path str, method: Method, handler: impl Handler + 'static) {
+    pub fn handle(
+        mut self,
+        path: &'path str,
+        method: Method,
+        handler: impl Handler + 'static,
+    ) -> Self {
         if !path.starts_with('/') {
             panic!("path must begin with '/' in path '{}'", path);
         }
@@ -169,6 +135,8 @@ impl<'path> Router<'path> {
             .entry(method)
             .or_insert_with(Node::default)
             .insert(path, Box::new(handler));
+
+        self
     }
 
     /// Lookup allows the manual lookup of handler for a specific method and path.
@@ -177,10 +145,10 @@ impl<'path> Router<'path> {
     /// use httprouter::Router;
     /// use hyper::{Response, Body, Method};
     ///
-    /// let mut router = Router::default();
-    /// router.get("/home", |_| {
-    ///     async { Ok(Response::new(Body::from("Welcome!"))) }
-    /// });
+    /// let router = Router::default()
+    ///     .get("/home", |_| async {
+    ///         Ok(Response::new(Body::from("Welcome!")))
+    ///     });
     ///
     /// let res = router.lookup(&Method::GET, "/home").unwrap();
     /// assert!(res.params.is_empty());
@@ -201,38 +169,105 @@ impl<'path> Router<'path> {
     }
 
     /// Register a handler for `GET` requests
-    pub fn get(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::GET, handler);
+    pub fn get(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::GET, handler)
     }
 
     /// Register a handler for `HEAD` requests
-    pub fn head(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::HEAD, handler);
+    pub fn head(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::HEAD, handler)
     }
 
     /// Register a handler for `OPTIONS` requests
-    pub fn options(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::OPTIONS, handler);
+    pub fn options(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::OPTIONS, handler)
     }
 
     /// Register a handler for `POST` requests
-    pub fn post(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::POST, handler);
+    pub fn post(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::POST, handler)
     }
 
     /// Register a handler for `PUT` requests
-    pub fn put(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::PUT, handler);
+    pub fn put(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::PUT, handler)
     }
 
     /// Register a handler for `PATCH` requests
-    pub fn patch(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::PATCH, handler);
+    pub fn patch(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::PATCH, handler)
     }
 
     /// Register a handler for `DELETE` requests
-    pub fn delete(&mut self, path: &'path str, handler: impl Handler + 'static) {
-        self.handle(path, Method::DELETE, handler);
+    pub fn delete(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+        self.handle(path, Method::DELETE, handler)
+    }
+
+    /// Enables automatic redirection if the current route can't be matched but a
+    /// handler for the path with (without) the trailing slash exists.
+    /// For example if `/foo/` is requested but a route only exists for `/foo`, the
+    /// client is redirected to `/foo` with HTTP status code 301 for `GET` requests
+    /// and 307 for all other request methods.
+    pub fn redirect_trailing_slash(mut self) -> Self {
+        self.redirect_trailing_slash = true;
+        self
+    }
+
+    /// If enabled, the router tries to fix the current request path, if no
+    /// handle is registered for it.
+    /// First superfluous path elements like `../` or `//` are removed.
+    /// Afterwards the router does a case-insensitive lookup of the cleaned path.
+    /// If a handle can be found for this route, the router makes a redirection
+    /// to the corrected path with status code 301 for `GET` requests and 307 for
+    /// all other request methods.
+    /// For example `/FOO` and `/..//Foo` could be redirected to `/foo`.
+    /// `redirect_trailing_slash` is independent of this option.
+    pub fn redirect_fixed_path(mut self) -> Self {
+        self.redirect_fixed_path = true;
+        self
+    }
+
+    /// If enabled, the router checks if another method is allowed for the
+    /// current route, if the current request can not be routed.
+    /// If this is the case, the request is answered with `MethodNotAllowed`
+    /// and HTTP status code 405.
+    /// If no other Method is allowed, the request is delegated to the `NotFound`
+    /// handler.
+    pub fn handle_method_not_allowed(mut self) -> Self {
+        self.handle_method_not_allowed = true;
+        self
+    }
+
+    /// If enabled, the router automatically replies to `OPTIONS` requests.
+    /// Custom `OPTIONS` handlers take priority over automatic replies.
+    pub fn handle_options(mut self) -> Self {
+        self.handle_options = true;
+        self
+    }
+
+    /// An optional handler that is called on automatic `OPTIONS` requests.
+    /// The handler is only called if `handle_options` is true and no `OPTIONS`
+    /// handler for the specific path was set.
+    /// The `Allowed` header is set before calling the handler.
+    pub fn global_options(mut self, handler: impl Handler + 'static) -> Self {
+        self.global_options = Some(Box::new(handler));
+        self
+    }
+
+    /// Configurable handler which is called when no matching route is
+    /// found.
+    pub fn not_found(mut self, handler: impl Handler + 'static) -> Self {
+        self.not_found = Some(Box::new(handler));
+        self
+    }
+
+    /// A configurable handler which is called when a request
+    /// cannot be routed and `handle_method_not_allowed` is true.
+    /// The `Allow` header with allowed request methods is set before the handler
+    /// is called.
+    pub fn method_not_allowed(mut self, handler: impl Handler + 'static) -> Self {
+        self.method_not_allowed = Some(Box::new(handler));
+        self
     }
 
     /// Returns a list of the allowed methods for a specific path
@@ -240,10 +275,10 @@ impl<'path> Router<'path> {
     /// use httprouter::Router;
     /// use hyper::{Response, Body, Method};
     ///
-    /// let mut router = Router::default();
-    /// router.get("/home", |_| {
-    ///     async { Ok(Response::new(Body::from("Welcome!"))) }
-    /// });
+    /// let router = Router::default()
+    ///     .get("/home", |_| async {
+    ///         Ok(Response::new(Body::from("Welcome!")))
+    ///     });
     ///
     /// let allowed = router.allowed("/home");
     /// assert!(allowed.contains(&"GET".to_string()));
@@ -415,10 +450,8 @@ impl<'path> Router<'path> {
     /// # use std::sync::Arc;
     ///
     /// # async fn run() {
-    /// let mut router: Router = Router::default();
+    /// let router = Arc::new(Router::default());
     ///
-    /// let router = Arc::new(router);
-    ///    
     /// let make_svc = make_service_fn(move |_| {
     ///     let router = router.clone();
     ///     async move {
