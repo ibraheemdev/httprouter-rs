@@ -23,15 +23,14 @@
 //!
 //! **High Performance:** HttpRouter relies on a tree structure which makes heavy use of *common prefixes*, it is basically a [radix tree](https://en.wikipedia.org/wiki/Radix_tree). This makes lookups extremely fast. Internally, it uses the [matchit](https://github.com/ibraheemdev/matchit) package.
 //!
-//! Of course you can also set **custom [`NotFound`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.not_found) and  [`MethodNotAllowed`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.method_not_allowed) handlers** , [**serve static files**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.serve_files), and [**automatically respond to OPTIONS requests**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.global_options)
+//! Of course you can also set **custom [`NotFound`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.not_found) and  [`MethodNotAllowed`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.method_not_allowed) handlers** , [**serve static files**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.serve_files), and [**automatically respond to OPTIONS requests**](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.global_options)
 //!
 //! ## Usage
 //!
 //! Here is a simple example:
 //!
 //! ```rust,no_run
-//! use httprouter::{Router, Params, Handler};
-//! use std::convert::Infallible;
+//! use httprouter::{Router, Params};
 //! use hyper::{Request, Response, Body, Error};
 //!
 //! async fn index(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -61,7 +60,7 @@
 //!
 //! Named parameters only match a single path segment:
 //!
-//! ```ignore
+//! ```text
 //! Pattern: /user/:user
 //!
 //!  /user/gordon              match
@@ -76,7 +75,7 @@
 //!
 //! The second type are *catch-all* parameters and have the form `*name`. Like the name suggests, they match everything. Therefore they must always be at the **end** of the pattern:
 //!
-//! ```ignore
+//! ```text
 //! Pattern: /src/*filepath
 //!
 //!  /src/                     match
@@ -86,10 +85,10 @@
 //!
 //! ## Automatic OPTIONS responses and CORS
 //!
-//! One might wish to modify automatic responses to OPTIONS requests, e.g. to support [CORS preflight requests](https://developer.mozilla.org/en-US/docs/Glossary/preflight_request) or to set other headers. This can be achieved using the [`Router::global_options`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#structfield.global_options) handler:
+//! One might wish to modify automatic responses to OPTIONS requests, e.g. to support [CORS preflight requests](https://developer.mozilla.org/en-US/docs/Glossary/preflight_request) or to set other headers. This can be achieved using the [`Router::global_options`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.global_options) handler:
 //!
 //! ```rust
-//! use httprouter::{Router, Handler};
+//! use httprouter::{Router};
 //! use hyper::{Request, Response, Body, Error};
 //!
 //! async fn cors(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -111,58 +110,49 @@
 //! Here is a quick example: Does your server serve multiple domains / hosts? You want to use sub-domains? Define a router per host!
 //!
 //! ```rust,no_run
-//! use httprouter::{Handler, Router};
-//! use httprouter::router::RouterService;
+//! use httprouter::Router;
 //! use hyper::service::{make_service_fn, service_fn};
-//! use hyper::{Body, Request, Response, Server, StatusCode};
-//! use std::collections::HashMap;
-//! use std::convert::Infallible;
-//! use std::sync::Arc;
+//! # use hyper::{Body, Request, Response};
+//! # use std::collections::HashMap;
+//! # use std::convert::Infallible;
+//! # use std::sync::Arc;
 //!
 //! pub struct HostSwitch<'a>(HashMap<String, Router<'a>>);
 //!
 //! impl HostSwitch<'_> {
 //!     async fn serve(&self, req: Request<Body>) -> hyper::Result<Response<Body>> {
-//!         let forbidden = Response::builder()
-//!             .status(StatusCode::FORBIDDEN)
-//!             .body(Body::empty())
-//!             .unwrap();
+//!         # let forbidden = || Response::builder()
+//!         #     .status(401)
+//!         #     .body(Body::empty())
+//!         #     .unwrap();
 //!         match req.headers().get("host") {
 //!             Some(host) => match self.0.get(host.to_str().unwrap()) {
 //!                 Some(router) => router.serve(req).await,
-//!                 None => Ok(forbidden),
+//!                 None => Ok(forbidden()),
 //!             },
-//!             None => Ok(forbidden),
+//!             None => Ok(forbidden()),
 //!         }
 //!     }
 //! }
 //!
-//! async fn hello(_: Request<Body>) -> hyper::Result<Response<Body>> {
-//!     Ok(Response::new(Body::default()))
-//! }
-//!
 //! #[tokio::main]
 //! async fn main() {
-//!     let router = Router::default()
-//!         .get("/", hello)
-//!         .get("/home", hello);
-//!
-//!     let mut host_switch: HostSwitch = HostSwitch(HashMap::new());
-//!     host_switch.0.insert("example.com:12345".into(), router);
+//!     let mut host_switch = HostSwitch(HashMap::new());
+//!     host_switch.0.insert("example.com:12345".into(), Router::default());
 //!
 //!     let host_switch = Arc::new(host_switch);
 //!     
 //!     let make_svc = make_service_fn(move |_| {
 //!         let host_switch = host_switch.clone();
 //!         async move {
-//!             Ok::<_, Infallible>(service_fn(move |req: Request<Body>| {
+//!             Ok::<_, Infallible>(service_fn(move |req| {
 //!                 let host_switch = host_switch.clone();
 //!                 async move { host_switch.serve(req).await }
 //!             }))
 //!         }
 //!     });
 //!
-//!     let server = Server::bind(&([127, 0, 0, 1], 3000).into())
+//!     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
 //!         .serve(make_svc)
 //!         .await;
 //! }
@@ -179,15 +169,15 @@
 //! ```rust
 //! use httprouter::Router;
 //! use hyper::{Request, Response, Body, Error};
-//! 
+//!
 //! async fn not_found(req: Request<Body>) -> Result<Response<Body>, Error> {
 //!     let res = Response::builder()
-//! 	    .status(400)
+//! 	    .status(404)
 //! 	    .body(Body::empty())
 //! 	    .unwrap();
 //! 	Ok(res)
 //! }
-//! 
+//!
 //! fn main() {
 //!     let router = Router::default().not_found(not_found);
 //! }
