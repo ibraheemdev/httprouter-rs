@@ -16,20 +16,16 @@ pub fn clean(p: &str) -> String {
         return "/".to_string();
     }
 
-    // Reasonably sized buffer on stack to avoid allocations in the common case.
-    // If a larger buffer is required, it gets allocated dynamically.
     let mut buf: Vec<u8> = Vec::new();
 
     let n = p.len();
 
-    // Invariants:
-    //      reading from path; r is index of next byte to process.
-    //      writing to buf; w is index of next byte to write.
-
-    // path must start with '/'
+    // next byte to process.
     let mut r = 1;
+    // next byte to write.
     let mut w = 1;
 
+    // path must start with '/'
     if !p.starts_with('/') {
         r = 0;
         buf.resize(n + 1, 0);
@@ -38,11 +34,6 @@ pub fn clean(p: &str) -> String {
 
     let mut trailing = n > 1 && p.ends_with('/');
     let p = p.as_bytes();
-
-    // A bit more clunky without a 'lazybuf' like the path package, but the loop
-    // gets completely inlined (bufApp calls).
-    // So in contrast to the path package this loop has no expensive function
-    // calls (except make, if needed).
 
     while r < n {
         match p[r] {
@@ -105,21 +96,19 @@ pub fn clean(p: &str) -> String {
     String::from_utf8(buf[..w].to_vec()).unwrap()
 }
 
-// Internal helper to lazily create a buffer if necessary.
 #[inline]
 fn buf_app(buf: &mut Vec<u8>, s: &[u8], w: usize, c: u8) {
     if buf.is_empty() {
-        // No modification of the original string so far.
         // If the next character is the same as in the original string, we do
-        // not yet have to allocate a buffer.
+        // not have to allocate.
         if s[w] == c {
             return;
         }
-        // Otherwise use either the stack buffer, if it is large enough, or
-        // allocate a new buffer on the heap, and copy all previous characters.
+
         buf.resize(s.len(), 0);
         buf[..w].copy_from_slice(&s[..w]);
     }
+
     buf[w] = c;
 }
 
