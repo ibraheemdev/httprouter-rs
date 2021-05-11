@@ -88,15 +88,18 @@
 //!  let third_value = &params[2].value; // the value of the 3rd parameter
 //! ```
 use crate::path::clean;
-use hyper::service::Service;
-use hyper::{header, Body, Method, Request, Response, StatusCode};
-use matchit::{Match, Node};
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::str;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use futures_util::{future, ready};
+use hyper::service::Service;
+use hyper::{header, Body, Method, Request, Response, StatusCode};
+use matchit::{Match, Node};
 
 /// Router dispatches requests to different handlers via configurable routes.
 pub struct Router<'path> {
@@ -378,7 +381,7 @@ pub struct MakeRouterService<'path>(RouterService<'path>);
 impl<'path, T> Service<T> for MakeRouterService<'path> {
     type Response = RouterService<'path>;
     type Error = hyper::Error;
-    type Future = futures_util::future::Ready<Result<Self::Response, Self::Error>>;
+    type Future = future::Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -386,12 +389,12 @@ impl<'path, T> Service<T> for MakeRouterService<'path> {
 
     fn call(&mut self, _: T) -> Self::Future {
         let service = self.0.clone();
-        futures_util::future::ok(service)
+        future::ok(service)
     }
 }
 
-#[derive(Clone)]
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct RouterService<'path>(Arc<Router<'path>>);
 
 impl<'path> RouterService<'path> {
@@ -403,7 +406,7 @@ impl<'path> RouterService<'path> {
 impl<'path> Service<Request<Body>> for RouterService<'path> {
     type Response = Response<Body>;
     type Error = hyper::Error;
-    type Future = Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>>;
+    type Future = ResponseFut;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -468,17 +471,14 @@ impl<'path> Router<'path> {
     ///     .await;
     /// # }
     /// ```
-    pub fn serve(
-        &self,
-        mut req: Request<Body>,
-    ) -> Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>> {
+    pub fn serve(&self, mut req: Request<Body>) -> ResponseFut {
         let root = self.trees.get(req.method());
         let path = req.uri().path();
         if let Some(root) = root {
             match root.at(path) {
                 Ok(lookup) => {
                     req.extensions_mut().insert(lookup.params);
-                    return lookup.value.handle(req);
+                    return ResponseFutKind::Boxed(lookup.value.handle(req)).into();
                 }
                 Err(tsr) => {
                     if req.method() != Method::CONNECT && path != "/" {
@@ -491,75 +491,97 @@ impl<'path> Router<'path> {
 
                         if tsr == matchit::Tsr::Yes && self.redirect_trailing_slash {
                             let path = if path.len() > 1 && path.ends_with('/') {
-                                path[..path.len() - 1].to_string()
+                                path[..path.len() - 1].to_owned()
                             } else {
-                                path.to_string() + "/"
+                                [path, "/"].join("")
                             };
 
-                            return Box::pin(async move {
-                                Ok(Response::builder()
-                                    .header(header::LOCATION, path.as_str())
-                                    .status(code)
-                                    .body(Body::empty())
-                                    .unwrap())
-                            });
-                        };
+                            return ResponseFutKind::Redirect(path, code).into();
+                        }
 
                         if self.redirect_fixed_path {
                             if let Some(fixed_path) =
-                                root.path_ignore_case(&clean(path), self.redirect_trailing_slash)
+                                root.path_ignore_case(clean(path), self.redirect_trailing_slash)
                             {
-                                return Box::pin(async move {
-                                    Ok(Response::builder()
-                                        .header(header::LOCATION, fixed_path.as_str())
-                                        .status(code)
-                                        .body(Body::empty())
-                                        .unwrap())
-                                });
+                                return ResponseFutKind::Redirect(fixed_path, code).into();
                             }
-                        };
-                    };
+                        }
+                    }
                 }
             }
-        };
+        }
 
         if req.method() == Method::OPTIONS && self.handle_options {
-            let allow = self.allowed(path).join(", ");
-            if allow != "" {
-                match &self.global_options {
-                    Some(handler) => return handler.handle(req),
-                    None => {
-                        return Box::pin(async {
-                            Ok(Response::builder()
-                                .header(header::ALLOW, allow)
-                                .body(Body::empty())
-                                .unwrap())
-                        });
-                    }
+            let allow = self.allowed(path);
+
+            if !allow.is_empty() {
+                return match self.global_options {
+                    Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+                    None => ResponseFutKind::Options(allow.join(", ")).into(),
                 };
             }
         } else if self.handle_method_not_allowed {
-            let allow = self.allowed(path).join(", ");
+            let allow = self.allowed(path);
 
             if !allow.is_empty() {
-                if let Some(ref handler) = self.method_not_allowed {
-                    return handler.handle(req);
-                }
-                return Box::pin(async {
-                    Ok(Response::builder()
-                        .header(header::ALLOW, allow)
-                        .status(StatusCode::METHOD_NOT_ALLOWED)
-                        .body(Body::empty())
-                        .unwrap())
-                });
-            }
-        };
-
-        match &self.not_found {
-            Some(handler) => handler.handle(req),
-            None => {
-                Box::pin(async { Ok(Response::builder().status(404).body(Body::empty()).unwrap()) })
+                return match self.method_not_allowed {
+                    Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+                    None => ResponseFutKind::MethodNotAllowed(allow.join(", ")).into(),
+                };
             }
         }
+
+        match self.not_found {
+            Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+            None => ResponseFutKind::NotFound.into(),
+        }
+    }
+}
+
+pub struct ResponseFut {
+    kind: ResponseFutKind,
+}
+
+impl From<ResponseFutKind> for ResponseFut {
+    fn from(kind: ResponseFutKind) -> Self {
+        Self { kind }
+    }
+}
+
+enum ResponseFutKind {
+    Boxed(Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>>),
+    Redirect(String, StatusCode),
+    MethodNotAllowed(String),
+    Options(String),
+    NotFound,
+}
+
+impl Future for ResponseFut {
+    type Output = hyper::Result<Response<Body>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let ready = match self.kind {
+            ResponseFutKind::Boxed(ref mut fut) => ready!(fut.as_mut().poll(cx)),
+            ResponseFutKind::Redirect(ref path, code) => Ok(Response::builder()
+                .header(header::LOCATION, path.as_str())
+                .status(code)
+                .body(Body::empty())
+                .unwrap()),
+            ResponseFutKind::NotFound => Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap()),
+            ResponseFutKind::Options(ref allowed) => Ok(Response::builder()
+                .header(header::ALLOW, allowed)
+                .body(Body::empty())
+                .unwrap()),
+            ResponseFutKind::MethodNotAllowed(ref allowed) => Ok(Response::builder()
+                .header(header::ALLOW, allowed)
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Body::empty())
+                .unwrap()),
+        };
+
+        Poll::Ready(ready)
     }
 }
