@@ -278,40 +278,41 @@ impl<'path> Router<'path> {
     /// let router = Router::default()
     ///     .get("/home", |_| async {
     ///         Ok(Response::new(Body::from("Welcome!")))
+    ///     })
+    ///     .post("/home", |_| async {
+    ///         Ok(Response::new(Body::from("Welcome!")))
     ///     });
     ///
     /// let allowed = router.allowed("/home");
-    /// assert!(allowed.contains(&"GET".to_string()));
+    /// assert!(allowed.contains(&"GET"));
+    /// assert!(allowed.contains(&"POST"));
+    /// assert!(allowed.contains(&"OPTIONS"));
+    /// # assert_eq!(allowed.len(), 3);
     /// ```
-    pub fn allowed(&self, path: &str) -> Vec<String> {
-        let mut allowed: Vec<String> = Vec::new();
-        match path {
-            "*" => {
-                for method in self.trees.keys() {
-                    if method != Method::OPTIONS {
-                        allowed.push(method.to_string());
-                    }
-                }
-            }
-            _ => {
-                for method in self.trees.keys() {
-                    if method == Method::OPTIONS {
-                        continue;
-                    }
-
-                    if let Some(tree) = self.trees.get(method) {
-                        let handler = tree.at(path);
-
-                        if handler.is_ok() {
-                            allowed.push(method.to_string());
-                        }
-                    };
-                }
-            }
+    pub fn allowed(&self, path: &'path str) -> Vec<&str> {
+        let mut allowed = match path {
+            "*" => self
+                .trees
+                .keys()
+                .filter(|&method| method != Method::OPTIONS)
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>(),
+            _ => self
+                .trees
+                .keys()
+                .filter(|&method| method != Method::OPTIONS)
+                .filter(|&method| {
+                    self.trees
+                        .get(method)
+                        .map(|node| node.at(path).is_ok())
+                        .unwrap_or(false)
+                })
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>(),
         };
 
         if !allowed.is_empty() {
-            allowed.push(Method::OPTIONS.to_string())
+            allowed.push(Method::OPTIONS.as_ref())
         }
 
         allowed
