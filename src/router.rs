@@ -153,16 +153,16 @@ impl<'path> Router<'path> {
     ///         Ok(Response::new(Body::from("Welcome!")))
     ///     });
     ///
-    /// let res = router.lookup(&Method::GET, "/home").unwrap();
+    /// let res = router.lookup(Method::GET, "/home").unwrap();
     /// assert!(res.params.is_empty());
     /// ```
     pub fn lookup(
         &self,
-        method: &Method,
-        path: &str,
+        method: Method,
+        path: impl AsRef<str>,
     ) -> Result<Match<'_, Box<dyn Handler>>, matchit::Tsr> {
         self.trees
-            .get(method)
+            .get(&method)
             .map_or(Err(matchit::Tsr::No), |n| n.at(path))
     }
 
