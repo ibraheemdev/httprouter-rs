@@ -114,7 +114,7 @@ pub struct Router<'path> {
 }
 
 impl<'path> Router<'path> {
-    /// Insert a value into the router for a specific path indexed by a key.
+    /// Insert a value into the router for a specific path at the specified method.
     /// ```rust
     /// use httprouter::Router;
     /// use hyper::{Response, Body, Method};
@@ -131,7 +131,7 @@ impl<'path> Router<'path> {
         handler: impl Handler + 'static,
     ) -> Self {
         if !path.starts_with('/') {
-            panic!("path must begin with '/' in path '{}'", path);
+            panic!("expect path beginning with '/', found: '{}'", path);
         }
 
         self.trees
