@@ -294,12 +294,17 @@ impl<'path> Router<'path> {
     /// ```
     pub fn allowed(&self, path: &'path str) -> Vec<&str> {
         let mut allowed = match path {
-            "*" => self
-                .trees
-                .keys()
-                .filter(|&method| method != Method::OPTIONS)
-                .map(AsRef::as_ref)
-                .collect::<Vec<_>>(),
+            "*" => {
+                let mut allowed = Vec::with_capacity(self.trees.len());
+                for method in self
+                    .trees
+                    .keys()
+                    .filter(|&method| method != Method::OPTIONS)
+                {
+                    allowed.push(method.as_ref());
+                }
+                allowed
+            }
             _ => self
                 .trees
                 .keys()
