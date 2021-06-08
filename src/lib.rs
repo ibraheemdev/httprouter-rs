@@ -30,7 +30,7 @@
 //! Here is a simple example:
 //!
 //! ```rust,no_run
-//! use httprouter::{Router, Params};
+//! use httprouter::{Router, Params, handler_fn};
 //! use hyper::{Request, Response, Body, Error};
 //!
 //! async fn index(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -45,8 +45,8 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let router = Router::default()
-//!         .get("/", index)
-//!         .get("/hello/:user", hello);
+//!         .get("/", handler_fn(index))
+//!         .get("/hello/:user", handler_fn(hello));
 //!
 //!     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
 //!         .serve(router.into_service())
@@ -88,7 +88,7 @@
 //! One might wish to modify automatic responses to OPTIONS requests, e.g. to support [CORS preflight requests](https://developer.mozilla.org/en-US/docs/Glossary/preflight_request) or to set other headers. This can be achieved using the [`Router::global_options`](https://docs.rs/httprouter/newest/httprouter/router/struct.Router.html#method.global_options) handler:
 //!
 //! ```rust
-//! use httprouter::{Router};
+//! use httprouter::{Router, handler_fn};
 //! use hyper::{Request, Response, Body, Error};
 //!
 //! async fn cors(_: Request<Body>) -> Result<Response<Body>, Error> {
@@ -101,7 +101,7 @@
 //! }
 //!
 //! fn main() {
-//!   let router = Router::default().global_options(cors);
+//!   let router = Router::default().global_options(handler_fn(cors));
 //! }
 //! ```
 //!
@@ -110,34 +110,35 @@
 //! Here is a quick example: Does your server serve multiple domains / hosts? You want to use sub-domains? Define a router per host!
 //!
 //! ```rust,no_run
-//! use httprouter::Router;
+//! use httprouter::{Router, BoxError};
 //! use hyper::service::{make_service_fn, service_fn};
 //! # use hyper::{Body, Request, Response};
 //! # use std::collections::HashMap;
 //! # use std::convert::Infallible;
 //! # use std::sync::Arc;
 //!
-//! pub struct HostSwitch<'a>(HashMap<String, Router<'a>>);
+//! #[derive(Default)]
+//! pub struct HostSwitch(HashMap<String, Router>);
 //!
-//! impl HostSwitch<'_> {
-//!     async fn serve(&self, req: Request<Body>) -> hyper::Result<Response<Body>> {
-//!         # let forbidden = || Response::builder()
-//!         #     .status(401)
+//! impl HostSwitch {
+//!     async fn serve(&self, req: Request<Body>) -> Result<Response<Body>, BoxError> {
+//!         # let not_found = Response::builder()
+//!         #     .status(404)
 //!         #     .body(Body::empty())
 //!         #     .unwrap();
 //!         match req.headers().get("host") {
 //!             Some(host) => match self.0.get(host.to_str().unwrap()) {
 //!                 Some(router) => router.serve(req).await,
-//!                 None => Ok(forbidden()),
+//!                 None => Ok(not_found),
 //!             },
-//!             None => Ok(forbidden()),
+//!             None => Ok(not_found),
 //!         }
 //!     }
 //! }
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut host_switch = HostSwitch(HashMap::new());
+//!     let mut host_switch = HostSwitch::default();
 //!     host_switch.0.insert("example.com:12345".into(), Router::default());
 //!
 //!     let host_switch = Arc::new(host_switch);
@@ -167,7 +168,7 @@
 //! The `not_found` handler can for example be used to return a 404 page:
 //!
 //! ```rust
-//! use httprouter::Router;
+//! use httprouter::{Router, handler_fn};
 //! use hyper::{Request, Response, Body, Error};
 //!
 //! async fn not_found(req: Request<Body>) -> Result<Response<Body>, Error> {
@@ -179,7 +180,7 @@
 //! }
 //!
 //! fn main() {
-//!     let router = Router::default().not_found(not_found);
+//!     let router = Router::default().not_found(handler_fn(not_found));
 //! }
 //! ```
 //!
@@ -199,10 +200,9 @@ pub(crate) mod path;
 pub mod router;
 
 #[doc(inline)]
-pub use router::{Handler, Router};
-
-#[doc(inline)]
-pub use matchit::Params;
+pub use router::{
+    handler_fn, BoxError, HandlerError, HandlerFuture, HandlerService, Params, Router,
+};
 
 // test the code examples in README.md
 #[cfg(doctest)]

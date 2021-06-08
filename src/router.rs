@@ -10,7 +10,7 @@
 //! With the `hyper-server` feature enabled, the `Router` can be used as a router for a hyper server:
 //!
 //! ```rust,no_run
-//! use httprouter::{Router, Params};
+//! use httprouter::{Router, Params, handler_fn};
 //! use std::convert::Infallible;
 //! use hyper::{Request, Response, Body, Error};
 //!
@@ -26,8 +26,8 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let router = Router::default()
-//!         .get("/", index)
-//!         .get("/hello/:user", hello);
+//!         .get("/", handler_fn(index))
+//!         .get("/hello/:user", handler_fn(hello));
 //!
 //!     hyper::Server::bind(&([127, 0, 0, 1], 3000).into())
 //!         .serve(router.into_service())
@@ -71,65 +71,234 @@
 //! ```
 //! The value of parameters is saved as a `Vec` of the `Param` struct, consisting
 //! each of a key and a value.
-//!
-//! There are two ways to retrieve the value of a parameter:
-//!  1) by the name of the parameter
 //! ```ignore
-//!  # use httprouter::tree::Params;
-//!  # let params = Params::default();
-
-//!  let user = params.get("user") // defined by :user or *user
-//! ```
-//!  2) by the index of the parameter. This way you can also get the name (key)
-//! ```rust,no_run
-//!  # use httprouter::Params;
-//!  # let params = Params::default();
-//!  let third_key = &params[2].key;   // the name of the 3rd parameter
-//!  let third_value = &params[2].value; // the value of the 3rd parameter
+//! # use httprouter::tree::Params;
+//! # let params = Params::default();
+//!
+//! let user = params.get("user") // defined by :user or *user
+//!
+//! // alternatively, you can iterate through every matched parameter
+//! for (k, v) in params.iter() {
+//!    println!("{}: {}", k, v")
+//! }
 //! ```
 use crate::path::clean;
 
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::str;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_util::{future, ready};
 use hyper::service::Service;
 use hyper::{header, Body, Method, Request, Response, StatusCode};
-use matchit::{Match, Node};
+use matchit::Node;
 
-/// Router dispatches requests to different handlers via configurable routes.
-pub struct Router<'path> {
-    trees: HashMap<Method, Node<'path, Box<dyn Handler>>>,
+#[derive(Default)]
+pub struct Params {
+    vec: Vec<(String, String)>,
+}
+
+impl Params {
+    /// Returns the value of the first parameter registered matched for the given key.
+    pub fn get(&self, key: impl AsRef<str>) -> Option<&str> {
+        self.vec
+            .iter()
+            .find(|(k, _)| k == key.as_ref())
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Returns an iterator over the parameters in the list.
+    pub fn iter(&self) -> std::slice::Iter<'_, (String, String)> {
+        self.vec.iter()
+    }
+
+    /// Returns a mutable iterator over the parameters in the list.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, (String, String)> {
+        self.vec.iter_mut()
+    }
+
+    /// Returns an owned iterator over the parameters in the list.
+    pub fn into_iter(self) -> std::vec::IntoIter<(String, String)> {
+        self.vec.into_iter()
+    }
+}
+
+pub trait HandlerService<F, E>:
+    Service<Request<Body>, Response = Response<Body>, Error = E, Future = F>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
+
+impl<S, F, E> HandlerService<F, E> for S where
+    S: Service<Request<Body>, Response = Response<Body>, Error = E, Future = F>
+        + Send
+        + Sync
+        + Clone
+        + 'static
+{
+}
+
+pub trait HandlerFuture<E>:
+    Future<Output = Result<Response<Body>, E>> + Send + Sync + 'static
+{
+}
+
+impl<F, E> HandlerFuture<E> for F where
+    F: Future<Output = Result<Response<Body>, E>> + Send + Sync + 'static
+{
+}
+
+pub trait HandlerError: StdError + Send + Sync + 'static {}
+
+impl<E> HandlerError for E where E: StdError + Send + Sync + 'static {}
+
+#[derive(Clone)]
+struct HandlerServiceImpl<S> {
+    service: S,
+}
+
+impl<S> HandlerServiceImpl<S> {
+    fn new(service: S) -> Self {
+        Self { service }
+    }
+}
+
+impl<S, R> Service<R> for HandlerServiceImpl<S>
+where
+    S: Service<R>,
+    S::Future: Send + Sync + 'static,
+    S::Error: HandlerError,
+{
+    type Future = Pin<Box<dyn Future<Output = Result<S::Response, BoxError>> + Send + Sync>>;
+    type Error = BoxError;
+    type Response = S::Response;
+
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: R) -> Self::Future {
+        use futures_util::future::TryFutureExt;
+        Box::pin(self.service.call(req).map_err(|e| BoxError(Box::new(e))))
+    }
+}
+
+pub fn handler_fn<F, O, E>(f: F) -> HandlerFnService<F>
+where
+    F: FnMut(Request<Body>) -> O + Send + Sync + Clone + 'static,
+    O: HandlerFuture<E>,
+    E: HandlerError,
+{
+    fn assert_handler<H, O, E>(h: H) -> H
+    where
+        H: HandlerService<O, E>,
+        O: HandlerFuture<E>,
+        E: HandlerError,
+    {
+        h
+    }
+
+    assert_handler(HandlerFnService { f })
+}
+
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct HandlerFnService<F> {
+    f: F,
+}
+
+impl<F, O, E> Service<Request<Body>> for HandlerFnService<F>
+where
+    F: FnMut(Request<Body>) -> O,
+    O: Future<Output = Result<Response<Body>, E>> + Send + Sync + 'static,
+    E: HandlerError,
+{
+    type Response = Response<Body>;
+    type Error = E;
+    type Future = O;
+
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        (self.f)(req)
+    }
+}
+
+trait StoredService:
+    Service<
+        Request<Body>,
+        Error = BoxError,
+        Response = Response<Body>,
+        Future = Pin<Box<dyn Future<Output = Result<Response<Body>, BoxError>> + Send + Sync>>,
+    > + Send
+    + Sync
+    + 'static
+{
+    fn box_clone(&self) -> Box<dyn StoredService>;
+}
+
+impl<S> StoredService for S
+where
+    S: Service<
+            Request<Body>,
+            Error = BoxError,
+            Response = Response<Body>,
+            Future = Pin<Box<dyn Future<Output = Result<Response<Body>, BoxError>> + Send + Sync>>,
+        > + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    fn box_clone(&self) -> Box<dyn StoredService> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn StoredService> {
+    fn clone(&self) -> Self {
+        self.box_clone()
+    }
+}
+
+pub struct Router {
+    trees: HashMap<Method, Node<Box<dyn StoredService>>>,
     redirect_trailing_slash: bool,
     redirect_fixed_path: bool,
     handle_method_not_allowed: bool,
     handle_options: bool,
-    global_options: Option<Box<dyn Handler>>,
-    not_found: Option<Box<dyn Handler>>,
-    method_not_allowed: Option<Box<dyn Handler>>,
+    global_options: Option<Box<dyn StoredService>>,
+    not_found: Option<Box<dyn StoredService>>,
+    method_not_allowed: Option<Box<dyn StoredService>>,
 }
 
-impl<'path> Router<'path> {
-    /// Insert a value into the router for a specific path at the specified method.
+impl Router {
+    /// Register a handler for the given path and method.
     /// ```rust
-    /// use httprouter::Router;
+    /// use httprouter::{Router, handler_fn};
     /// use hyper::{Response, Body, Method};
+    /// use std::convert::Infallible;
     ///
     /// let router = Router::default()
-    ///     .handle("/teapot", Method::GET, |_| async {
-    ///         Ok(Response::new(Body::from("I am a teapot!")))
-    ///     });
+    ///     .handle("/teapot", Method::GET, handler_fn(|_| async {
+    ///         Ok::<_, Infallible>(Response::new(Body::from("I am a teapot!")))
+    ///     }));
     /// ```
-    pub fn handle(
-        mut self,
-        path: &'path str,
-        method: Method,
-        handler: impl Handler + 'static,
-    ) -> Self {
+    pub fn handle<H, F, E>(mut self, path: impl Into<String>, method: Method, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
+        let path = path.into();
         if !path.starts_with('/') {
             panic!("expect path beginning with '/', found: '{}'", path);
         }
@@ -137,33 +306,10 @@ impl<'path> Router<'path> {
         self.trees
             .entry(method)
             .or_insert_with(Node::default)
-            .insert(path, Box::new(handler));
+            .insert(path, Box::new(HandlerServiceImpl::new(handler)))
+            .unwrap();
 
         self
-    }
-
-    /// Lookup allows the manual lookup of handler for a specific method and path.
-    /// If the handler is not found, it returns a `Err(bool)` indicating whether a redirection should be performed to the same path with a trailing slash
-    /// ```rust
-    /// use httprouter::Router;
-    /// use hyper::{Response, Body, Method};
-    ///
-    /// let router = Router::default()
-    ///     .get("/home", |_| async {
-    ///         Ok(Response::new(Body::from("Welcome!")))
-    ///     });
-    ///
-    /// let res = router.lookup(Method::GET, "/home").unwrap();
-    /// assert!(res.params.is_empty());
-    /// ```
-    pub fn lookup(
-        &self,
-        method: Method,
-        path: impl AsRef<str>,
-    ) -> Result<Match<'_, Box<dyn Handler>>, matchit::Tsr> {
-        self.trees
-            .get(&method)
-            .map_or(Err(matchit::Tsr::No), |n| n.at(path))
     }
 
     /// TODO
@@ -172,37 +318,72 @@ impl<'path> Router<'path> {
     }
 
     /// Register a handler for `GET` requests
-    pub fn get(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn get<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::GET, handler)
     }
 
     /// Register a handler for `HEAD` requests
-    pub fn head(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn head<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::HEAD, handler)
     }
 
     /// Register a handler for `OPTIONS` requests
-    pub fn options(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn options<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::OPTIONS, handler)
     }
 
     /// Register a handler for `POST` requests
-    pub fn post(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn post<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::POST, handler)
     }
 
     /// Register a handler for `PUT` requests
-    pub fn put(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn put<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::PUT, handler)
     }
 
     /// Register a handler for `PATCH` requests
-    pub fn patch(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn patch<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::PATCH, handler)
     }
 
     /// Register a handler for `DELETE` requests
-    pub fn delete(self, path: &'path str, handler: impl Handler + 'static) -> Self {
+    pub fn delete<H, F, E>(self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
         self.handle(path, Method::DELETE, handler)
     }
 
@@ -252,15 +433,25 @@ impl<'path> Router<'path> {
     /// The handler is only called if `handle_options` is true and no `OPTIONS`
     /// handler for the specific path was set.
     /// The `Allowed` header is set before calling the handler.
-    pub fn global_options(mut self, handler: impl Handler + 'static) -> Self {
-        self.global_options = Some(Box::new(handler));
+    pub fn global_options<H, F, E>(mut self, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
+        self.global_options = Some(Box::new(HandlerServiceImpl::new(handler)));
         self
     }
 
     /// Configurable handler which is called when no matching route is
     /// found.
-    pub fn not_found(mut self, handler: impl Handler + 'static) -> Self {
-        self.not_found = Some(Box::new(handler));
+    pub fn not_found<H, F, E>(mut self, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
+        self.not_found = Some(Box::new(HandlerServiceImpl::new(handler)));
         self
     }
 
@@ -268,23 +459,29 @@ impl<'path> Router<'path> {
     /// cannot be routed and `handle_method_not_allowed` is true.
     /// The `Allow` header with allowed request methods is set before the handler
     /// is called.
-    pub fn method_not_allowed(mut self, handler: impl Handler + 'static) -> Self {
-        self.method_not_allowed = Some(Box::new(handler));
+    pub fn method_not_allowed<H, F, E>(mut self, handler: H) -> Self
+    where
+        H: HandlerService<F, E>,
+        F: HandlerFuture<E>,
+        E: HandlerError,
+    {
+        self.method_not_allowed = Some(Box::new(HandlerServiceImpl::new(handler)));
         self
     }
 
     /// Returns a list of the allowed methods for a specific path
     /// ```rust
-    /// use httprouter::Router;
+    /// use httprouter::{Router, handler_fn};
     /// use hyper::{Response, Body, Method};
+    /// use std::convert::Infallible;
     ///
     /// let router = Router::default()
-    ///     .get("/home", |_| async {
-    ///         Ok(Response::new(Body::from("Welcome!")))
-    ///     })
-    ///     .post("/home", |_| async {
-    ///         Ok(Response::new(Body::from("Welcome!")))
-    ///     });
+    ///     .get("/home", handler_fn(|_| async {
+    ///         Ok::<_, Infallible>(Response::new(Body::from("Welcome!")))
+    ///     }))
+    ///     .post("/home", handler_fn(|_| async {
+    ///         Ok::<_, Infallible>(Response::new(Body::from("{{ message: \"Welcome!\" }}")))
+    ///     }));
     ///
     /// let allowed = router.allowed("/home");
     /// assert!(allowed.contains(&"GET"));
@@ -292,8 +489,9 @@ impl<'path> Router<'path> {
     /// assert!(allowed.contains(&"OPTIONS"));
     /// # assert_eq!(allowed.len(), 3);
     /// ```
-    pub fn allowed(&self, path: &'path str) -> Vec<&str> {
-        let mut allowed = match path {
+    pub fn allowed(&self, path: impl Into<String>) -> Vec<&str> {
+        let path = path.into();
+        let mut allowed = match path.as_ref() {
             "*" => {
                 let mut allowed = Vec::with_capacity(self.trees.len());
                 for method in self
@@ -312,7 +510,7 @@ impl<'path> Router<'path> {
                 .filter(|&method| {
                     self.trees
                         .get(method)
-                        .map(|node| node.at(path).is_ok())
+                        .map(|node| node.at(&path).is_ok())
                         .unwrap_or(false)
                 })
                 .map(AsRef::as_ref)
@@ -327,8 +525,7 @@ impl<'path> Router<'path> {
     }
 }
 
-/// The default httprouter configuration
-impl Default for Router<'_> {
+impl Default for Router {
     fn default() -> Self {
         Self {
             trees: HashMap::new(),
@@ -338,53 +535,18 @@ impl Default for Router<'_> {
             handle_options: true,
             global_options: None,
             method_not_allowed: None,
-            not_found: Some(Box::new(|_| async {
-                Ok(Response::builder()
-                    .status(400)
-                    .body(Body::from("404: Not Found"))
-                    .unwrap())
-            })),
+            not_found: Some(Box::new(HandlerServiceImpl::new(handler_fn(|_| async {
+                Ok::<_, hyper::Error>(Response::builder().status(400).body(Body::empty()).unwrap())
+            })))),
         }
     }
 }
 
-/// Represents a HTTP handler function.
-/// This trait is implemented for asynchronous functions that take a `Request` and return a
-/// `Result<Response<Body>, hyper::Error>`
-/// ```rust
-/// # use httprouter::Handler;
-/// # use hyper::{Request, Response, Body};
-/// async fn hello(_: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-///     Ok(Response::new(Body::empty()))
-/// }
-///
-/// let handler: Box<dyn Handler> = Box::new(hello);
-/// ```
-pub trait Handler: Send + Sync {
-    fn handle(
-        &self,
-        req: Request<Body>,
-    ) -> Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>>;
-}
-
-impl<F, R> Handler for F
-where
-    F: Fn(Request<Body>) -> R + Send + Sync,
-    R: Future<Output = Result<Response<Body>, hyper::Error>> + Send + Sync + 'static,
-{
-    fn handle(
-        &self,
-        req: Request<Body>,
-    ) -> Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>> {
-        Box::pin(self(req))
-    }
-}
-
 #[doc(hidden)]
-pub struct MakeRouterService<'path>(RouterService<'path>);
+pub struct MakeRouterService(RouterService);
 
-impl<'path, T> Service<T> for MakeRouterService<'path> {
-    type Response = RouterService<'path>;
+impl<T> Service<T> for MakeRouterService {
+    type Response = RouterService;
     type Error = hyper::Error;
     type Future = future::Ready<Result<Self::Response, Self::Error>>;
 
@@ -400,17 +562,17 @@ impl<'path, T> Service<T> for MakeRouterService<'path> {
 
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct RouterService<'path>(Arc<Router<'path>>);
+pub struct RouterService(Arc<Router>);
 
-impl<'path> RouterService<'path> {
-    fn new(router: Router<'path>) -> Self {
+impl RouterService {
+    fn new(router: Router) -> Self {
         RouterService(Arc::new(router))
     }
 }
 
-impl<'path> Service<Request<Body>> for RouterService<'path> {
+impl Service<Request<Body>> for RouterService {
     type Response = Response<Body>;
-    type Error = hyper::Error;
+    type Error = BoxError;
     type Future = ResponseFut;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -418,11 +580,11 @@ impl<'path> Service<Request<Body>> for RouterService<'path> {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        self.0.serve(req)
+        self.0.clone().serve(req)
     }
 }
 
-impl<'path> Router<'path> {
+impl Router {
     /// Converts the `Router` into a `Service` which you can serve directly with `Hyper`.
     /// If you have an existing `Service` that you want to incorporate a `Router` into, see
     /// [`Router::serve`](crate::Router::serve).
@@ -443,7 +605,7 @@ impl<'path> Router<'path> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn into_service(self) -> MakeRouterService<'path> {
+    pub fn into_service(self) -> MakeRouterService {
         MakeRouterService(RouterService::new(self))
     }
 
@@ -482,10 +644,16 @@ impl<'path> Router<'path> {
         if let Some(root) = root {
             match root.at(path) {
                 Ok(lookup) => {
-                    req.extensions_mut().insert(lookup.params);
-                    return ResponseFutKind::Boxed(lookup.value.handle(req)).into();
+                    let mut value = lookup.value.clone();
+                    let vec = lookup
+                        .params
+                        .iter()
+                        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                        .collect();
+                    req.extensions_mut().insert(Params { vec });
+                    return ResponseFutKind::Boxed(value.call(req)).into();
                 }
-                Err(tsr) => {
+                Err(err) => {
                     if req.method() != Method::CONNECT && path != "/" {
                         let code = match *req.method() {
                             // Moved Permanently, request with GET method
@@ -494,7 +662,7 @@ impl<'path> Router<'path> {
                             _ => StatusCode::PERMANENT_REDIRECT,
                         };
 
-                        if tsr == matchit::Tsr::Yes && self.redirect_trailing_slash {
+                        if err.tsr() && self.redirect_trailing_slash {
                             let path = if path.len() > 1 && path.ends_with('/') {
                                 path[..path.len() - 1].to_owned()
                             } else {
@@ -521,7 +689,7 @@ impl<'path> Router<'path> {
 
             if !allow.is_empty() {
                 return match self.global_options {
-                    Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+                    Some(ref handler) => ResponseFutKind::Boxed(handler.clone().call(req)).into(),
                     None => ResponseFutKind::Options(allow.join(", ")).into(),
                 };
             }
@@ -530,14 +698,14 @@ impl<'path> Router<'path> {
 
             if !allow.is_empty() {
                 return match self.method_not_allowed {
-                    Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+                    Some(ref handler) => ResponseFutKind::Boxed(handler.clone().call(req)).into(),
                     None => ResponseFutKind::MethodNotAllowed(allow.join(", ")).into(),
                 };
             }
         }
 
         match self.not_found {
-            Some(ref handler) => ResponseFutKind::Boxed(handler.handle(req)).into(),
+            Some(ref handler) => ResponseFutKind::Boxed(handler.clone().call(req)).into(),
             None => ResponseFutKind::NotFound.into(),
         }
     }
@@ -554,7 +722,7 @@ impl From<ResponseFutKind> for ResponseFut {
 }
 
 enum ResponseFutKind {
-    Boxed(Pin<Box<dyn Future<Output = hyper::Result<Response<Body>>> + Send + Sync>>),
+    Boxed(Pin<Box<dyn Future<Output = Result<Response<Body>, BoxError>> + Send + Sync>>),
     Redirect(String, StatusCode),
     MethodNotAllowed(String),
     Options(String),
@@ -562,7 +730,7 @@ enum ResponseFutKind {
 }
 
 impl Future for ResponseFut {
-    type Output = hyper::Result<Response<Body>>;
+    type Output = Result<Response<Body>, BoxError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let ready = match self.kind {
@@ -588,5 +756,25 @@ impl Future for ResponseFut {
         };
 
         Poll::Ready(ready)
+    }
+}
+
+pub struct BoxError(Box<dyn StdError + Send + Sync>);
+
+impl fmt::Display for BoxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for BoxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl StdError for BoxError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&*self.0)
     }
 }

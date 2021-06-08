@@ -12,8 +12,8 @@ readme = "README.md"
 
 [dependencies]
 hyper = "0.14"
+matchit = "0.4"
 futures-util = { version = "0.3", default-features = false }
-matchit = "0.3"
 
 [dev-dependencies]
 hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
